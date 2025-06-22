@@ -6,7 +6,6 @@ const { v4: uuidv4 } = require('uuid');
 const { spawnSync } = require('child_process');
 const OpenAI = require('openai');
 const { renderScene } = require('./render');
-const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -70,7 +69,7 @@ import numpy as np
 3. Total length ≤ 300 physical lines.
 4. Prefer Axes / NumberPlane and Step-by-Step Transformations where appropriate.
 5. Do not use any library other than math and numpy.
-6. End of file is end of code – no trailing blank lines, no explanatory text.
+6. End of file is end of code - no trailing blank lines, no explanatory text.
 
 FAIL if any character outside legal Python appears.`;
 
@@ -101,6 +100,17 @@ function validateScript(code) {
   if (badKw.test(code)) {
     throw new Error('Unsupported kwarg "fill_color" in get_riemann_rectangles');
   }
+}
+
+// ---------------- Text-to-Speech helper (OpenAI) ----------------
+async function textToSpeechOpenAI(text, voice = process.env.TTS_VOICE || 'nova') {
+  const mp3 = await openai.audio.speech.create({
+    model: 'tts-1',
+    voice,
+    input: text,
+    format: 'mp3',
+  });
+  return Buffer.from(await mp3.arrayBuffer());
 }
 
 app.post('/api/teach', async (req, res) => {
@@ -224,18 +234,9 @@ ${runtimeErrorMsg}`,
   }
 });
 
-/*********************
- * Voice control API *
- *********************/
 app.post('/api/voice', async (req, res) => {
   const { transcript, mbti = 'INTJ', contextId = '' } = req.body || {};
   if (!transcript) return res.status(400).json({ error: 'Missing transcript' });
-
-  const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || 'Rachel';
-  const elevenApiKey = process.env.ELEVENLABS_API_KEY;
-  if (!elevenApiKey) {
-    return res.status(500).json({ error: 'Missing ELEVENLABS_API_KEY env var' });
-  }
 
   // Build system prompt exactly as per spec
   const VOICE_SYS_PROMPT = `You are tutorAI.  Given the learner's voice transcript and current lesson context, do two things:\n\n1. Compose a friendly ≤150-word reply (tone adjusted to MBTI tag).\n2. Decide which VIDEO-CONTROL actions to run next.\n   Allowed types: [\"play_animation\",\"pause_animation\",\"rewind_animation\",\n                   \"slow_down\",\"speed_up\",\"highlight_step\"].\n   Each action is a JSON object; \"slow_down\" / \"speed_up\" may include\n   {\"factor\": number}. \"highlight_step\" must include {\"index\": int}.\n\nReturn **only valid JSON** exactly in this schema:\n{\n  \"reply\": \"<string>\",\n  \"actions\": [ { \"type\": \"...\", ... }, ... ]\n}\nNo extra keys, no markdown, no comments.`;
@@ -249,7 +250,7 @@ app.post('/api/voice', async (req, res) => {
         { role: 'system', content: VOICE_SYS_PROMPT },
         { role: 'user', content: transcript },
       ],
-      max_tokens: 400,
+      max_tokens: 500,
     });
 
     const gptContent = completion.choices[0]?.message?.content || '{}';
@@ -264,32 +265,52 @@ app.post('/api/voice', async (req, res) => {
     const replyText = parsed.reply || '';
     const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
 
-    // 2) ElevenLabs TTS
-    const ttsResp = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`,
-      {
-        text: replyText,
-        model_id: 'eleven_monolingual_v1',
-        voice_settings: { stability: 0.4, similarity_boost: 0.8 },
-      },
-      {
-        headers: {
-          'xi-api-key': elevenApiKey,
-          'Content-Type': 'application/json',
-        },
-        responseType: 'arraybuffer',
-      }
-    );
-
+    // 2) OpenAI TTS
+    const buffer = await textToSpeechOpenAI(replyText);
     const fileName = `${uuidv4()}.mp3`;
-    const filePath = path.join(TTS_DIR, fileName);
-    fs.writeFileSync(filePath, ttsResp.data);
+    fs.writeFileSync(path.join(TTS_DIR, fileName), buffer);
     const audioUrl = `${req.protocol}://${req.get('host')}/tts/${fileName}`;
 
     res.json({ text: replyText, audioUrl, actions });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || 'Voice processing failed' });
+  }
+});
+
+/**
+ * Generate a quick multiple-choice quiz (5 questions) for self-testing.
+ * Expects JSON: { "prompt": "original user prompt", "explanation": "the text shown to learner" }
+ * Returns: { questions: [ { question, options: ["A","B",..], answerIndex } ] }
+ */
+app.post('/api/quiz', async (req, res) => {
+  const { prompt = '', explanation = '', mbti = 'INTJ' } = req.body || {};
+  if (!explanation) return res.status(400).json({ error: 'Missing explanation' });
+
+  const QUIZ_SYS = `You are tutorAI creating a quick self-assessment quiz. Given the lesson explanation, output 5 concise multiple-choice questions (4 options each) that test understanding. Mark the correct option by its index (0-3). Return ONLY strict JSON in this schema:\n{\n  \"questions\": [\n    { \"question\": <string>, \"options\": [<string>,<string>,<string>,<string>], \"answerIndex\": <0-3> }\n  ]\n}`;
+
+  try {
+    const resp = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.7,
+      messages: [
+        { role: 'system', content: QUIZ_SYS },
+        { role: 'user', content: `User prompt: ${prompt}\nExplanation:\n${explanation}` },
+      ],
+      max_tokens: 800,
+    });
+
+    let quiz;
+    try { quiz = JSON.parse(resp.choices[0].message.content || '{}'); }
+    catch { return res.status(500).json({ error: 'Failed to parse quiz JSON' }); }
+
+    if (!Array.isArray(quiz.questions)) {
+      return res.status(500).json({ error: 'Invalid quiz format' }); }
+
+    res.json(quiz);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Quiz generation failed' });
   }
 });
 
