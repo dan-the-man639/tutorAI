@@ -2,12 +2,13 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import styles from './page.module.css';
+import styles from './tutor.module.css';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
+import { Button } from '@/components/ui/button';
 
 const normalizeLatex = (text) =>
   text
@@ -351,30 +352,30 @@ export default function Home() {
   };
 
   return (
-    <main className={styles.container}>
-      <h1 className={styles.title}>tutorAI</h1>
-      <form onSubmit={handleSubmit} className={styles.promptForm}>
+    <main className={"max-w-4xl mx-auto p-6"}>
+      <h1 className={"text-3xl md:text-4xl font-bold mb-6 text-center"}>tutorAI</h1>
+      <form onSubmit={handleSubmit} className="flex flex-col md:flex-row gap-3 mb-8">
         <input
-          className={styles.promptInput}
+          className="flex-1 border border-gray-300 rounded-md px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           placeholder="Ask me any math or STEM question…"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
         />
-        <button type="submit" className={styles.submitBtn} disabled={loading}>
+        <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={loading}>
           {loading ? 'Loading…' : 'Teach me'}
-        </button>
-        <button type="button" className={styles.micBtn} onClick={toggleListening}>
+        </Button>
+        <Button type="button" variant="secondary" onClick={toggleListening}>
           {listening ? '⏹ Stop' : '🎤 Speak'}
-        </button>
+        </Button>
       </form>
 
       {explanation && (
-        <section className={styles.resultSection}>
-          <h2>Explanation</h2>
+        <section className="space-y-6">
+          <h2 className="text-2xl font-semibold text-center">Explanation</h2>
           <ReactMarkdown
             remarkPlugins={[remarkMath, remarkGfm, remarkBreaks]}
             rehypePlugins={[rehypeKatex]}
-            className={styles.explanation}
+            className={`${styles.explanation} prose max-w-none mx-auto`}
           >
             {cleanupMarkdown(normalizeLatex(explanation))}
           </ReactMarkdown>
